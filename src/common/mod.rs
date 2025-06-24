@@ -6,3 +6,4 @@ pub mod frame_processor;
 // pub mod transport; // TODO: Fix rustls/quinn version compatibility
 pub mod encoder;
 pub mod metrics;
+pub mod ffmpeg_encoder;

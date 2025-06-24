@@ -462,18 +462,30 @@ impl eframe::App for VoxApp {
             if let Ok(mut rx) = rx.try_lock() {
                 while let Ok(msg) = rx.try_recv() {
                     match msg {
-                        Message::ScreenFrame { timestamp, width, height, data, compressed } => {
-                            // Decompress if needed
-                            let rgb_data = if compressed {
-                                match decode_all(&data[..]) {
-                                    Ok(decompressed) => decompressed,
-                                    Err(e) => {
-                                        tracing::error!("Failed to decompress frame: {}", e);
-                                        continue;
+                        Message::ScreenFrame { timestamp, width, height, data, encoding } => {
+                            // Decode based on encoding type
+                            let rgb_data = match encoding {
+                                crate::common::protocol::EncodingType::Raw => data,
+                                crate::common::protocol::EncodingType::ZstdCompressed => {
+                                    match decode_all(&data[..]) {
+                                        Ok(decompressed) => decompressed,
+                                        Err(e) => {
+                                            tracing::error!("Failed to decompress frame: {}", e);
+                                            continue;
+                                        }
                                     }
                                 }
-                            } else {
-                                data
+                                crate::common::protocol::EncodingType::H264 => {
+                                    // For now, we can't decode H.264 on the client
+                                    // We would need to add an H.264 decoder
+                                    tracing::error!("H.264 decoding not yet implemented on client");
+                                    continue;
+                                }
+                                crate::common::protocol::EncodingType::WebP => {
+                                    // WebP is handled by software encoder
+                                    tracing::error!("WebP decoding not yet implemented");
+                                    continue;
+                                }
                             };
                             
                             // Initialize frame processor if needed

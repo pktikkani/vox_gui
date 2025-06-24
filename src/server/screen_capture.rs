@@ -7,6 +7,7 @@ use zstd::stream::encode_all;
 use crate::common::quality::QualityMode;
 use crate::common::frame_processor::FrameProcessor;
 use crate::common::encoder::{VideoEncoder, EncoderFactory, EncoderType, EncoderSettings};
+use crate::common::protocol::EncodingType;
 
 pub struct ScreenCapture {
     capturer: Capturer,
@@ -133,6 +134,7 @@ impl ScreenCapture {
                                     crate::common::frame_processor::FrameType::DeltaFrame
                                 },
                                 tiles: None,
+                                encoding: EncodingType::H264,
                             }));
                         }
                         Err(e) => {
@@ -178,6 +180,7 @@ impl ScreenCapture {
                                     .as_millis() as u64,
                                 frame_type: processed.frame_type,
                                 tiles: Some(compressed_tiles),
+                                encoding: EncodingType::ZstdCompressed,
                             }));
                         }
                         vec![]
@@ -194,6 +197,7 @@ impl ScreenCapture {
                         .as_millis() as u64,
                     frame_type: processed.frame_type,
                     tiles: None,
+                    encoding: EncodingType::ZstdCompressed,
                 }))
             }
             Err(ref e) if e.kind() == WouldBlock => {
@@ -257,4 +261,5 @@ pub struct CapturedFrame {
     pub timestamp: u64,
     pub frame_type: crate::common::frame_processor::FrameType,
     pub tiles: Option<Vec<crate::common::frame_processor::TileData>>,
+    pub encoding: crate::common::protocol::EncodingType,
 }

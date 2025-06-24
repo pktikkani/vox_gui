@@ -79,42 +79,8 @@ impl VideoEncoder for SoftwareEncoder {
     }
 }
 
-// Re-export platform-specific hardware encoders
-#[cfg(target_os = "macos")]
-pub use crate::platform::macos::video_toolbox::VideoToolboxEncoder as HardwareEncoder;
-
-#[cfg(windows)]
-pub use crate::platform::windows::media_foundation::MediaFoundationEncoder as HardwareEncoder;
-
-#[cfg(target_os = "linux")]
-pub struct HardwareEncoder {
-    settings: EncoderSettings,
-}
-
-#[cfg(target_os = "linux")]
-impl HardwareEncoder {
-    pub fn new(settings: EncoderSettings) -> Result<Self> {
-        Ok(Self { settings })
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl VideoEncoder for HardwareEncoder {
-    fn encode_frame(&mut self, rgb_data: &[u8], force_keyframe: bool) -> Result<EncodedFrame> {
-        // Fallback to software encoding for now on Linux
-        let mut sw_encoder = SoftwareEncoder::new(self.settings)?;
-        sw_encoder.encode_frame(rgb_data, force_keyframe)
-    }
-    
-    fn get_type(&self) -> EncoderType {
-        EncoderType::Hardware
-    }
-    
-    fn update_settings(&mut self, settings: EncoderSettings) -> Result<()> {
-        self.settings = settings;
-        Ok(())
-    }
-}
+// Use FFmpeg for hardware encoding on all platforms
+pub use crate::common::ffmpeg_encoder::FFmpegHardwareEncoder as HardwareEncoder;
 
 // Encoder factory
 pub struct EncoderFactory;

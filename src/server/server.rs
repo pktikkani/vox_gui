@@ -357,7 +357,7 @@ async fn screen_capture_loop(
                         width: frame.width,
                         height: frame.height,
                         data: frame.data.to_vec(),
-                        compressed: true,
+                        encoding: frame.encoding,
                     }
                 }
                 crate::common::frame_processor::FrameType::DeltaFrame => {

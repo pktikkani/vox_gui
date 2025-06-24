@@ -3,6 +3,14 @@ use bytes::Bytes;
 use crate::common::quality::{QualityMode, QualityMetrics};
 use crate::common::frame_processor::TileData;
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+pub enum EncodingType {
+    Raw,              // Uncompressed RGB
+    ZstdCompressed,   // Zstd compressed RGB
+    H264,            // H.264 video stream
+    WebP,            // WebP image
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum Message {
     // Authentication
@@ -19,7 +27,7 @@ pub enum Message {
         width: u32,
         height: u32,
         data: Vec<u8>,
-        compressed: bool,
+        encoding: EncodingType,
     },
     
     // Optimized frame with delta encoding
