@@ -151,7 +151,16 @@ impl EncoderFactory {
                 bitrate: 5_000_000,
                 keyframe_interval: 60,
             };
-            HardwareEncoder::new(test_settings).is_ok()
+            match HardwareEncoder::new(test_settings) {
+                Ok(_) => {
+                    tracing::info!("Hardware encoder is available");
+                    true
+                }
+                Err(e) => {
+                    tracing::info!("Hardware encoder not available: {}", e);
+                    false
+                }
+            }
         }
         
         #[cfg(not(any(target_os = "macos", windows)))]

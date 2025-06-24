@@ -124,46 +124,34 @@ impl VideoToolboxEncoder {
             output_buffer: Arc::new(Mutex::new(Vec::new())),
         };
         
-        encoder.create_session()?;
+        // Don't create session in constructor to avoid issues
         Ok(encoder)
     }
     
     fn create_session(&self) -> Result<()> {
         unsafe {
-            let output_buffer = self.output_buffer.clone();
+            tracing::info!("Creating VideoToolbox session for {}x{}", self.settings.width, self.settings.height);
             
-            // Create output callback
-            let callback = Box::new(move |_status: i32, _flags: u32, sample_buffer: *mut c_void| {
-                if !sample_buffer.is_null() {
-                    // Extract encoded data from sample buffer
-                    let data = extract_data_from_sample_buffer(sample_buffer);
-                    if !data.is_empty() {
-                        let mut buffer = output_buffer.lock();
-                        buffer.extend_from_slice(&data);
-                    }
-                }
-            });
-            
-            let callback_ptr = Box::into_raw(callback) as *mut c_void;
-            
-            let mut session_ptr: *mut c_void = std::ptr::null_mut();
+            let mut session_ptr: *mut c_void = ptr::null_mut();
             
             let status = VTCompressionSessionCreate(
-                std::ptr::null(), // Use default allocator
+                ptr::null(), // Use default allocator
                 self.settings.width as i32,
                 self.settings.height as i32,
                 K_CMVIDEO_CODEC_TYPE_H264,
-                std::ptr::null(), // Use default encoder
-                std::ptr::null(), // No source attributes
-                std::ptr::null(), // Use default allocator
+                ptr::null(), // Use default encoder
+                ptr::null(), // No source attributes
+                ptr::null(), // Use default allocator
                 output_callback_trampoline as *const c_void,
-                callback_ptr,
+                self as *const Self as *mut c_void,
                 &mut session_ptr,
             );
             
             if status != 0 {
                 return Err(anyhow::anyhow!("Failed to create VideoToolbox session: {}", status));
             }
+            
+            tracing::info!("VideoToolbox session created successfully");
             
             // Configure session for real-time encoding
             configure_session(session_ptr, self.settings.bitrate, self.settings.fps)?;
@@ -187,10 +175,20 @@ impl Drop for VideoToolboxEncoder {
 
 impl VideoEncoder for VideoToolboxEncoder {
     fn encode_frame(&mut self, rgb_data: &[u8], force_keyframe: bool) -> Result<EncodedFrame> {
+        tracing::debug!("VideoToolbox encode_frame called");
+        
+        // Create session on first use
+        let needs_init = self.session.lock().is_none();
+        if needs_init {
+            tracing::info!("Initializing VideoToolbox session on first frame");
+            self.create_session()?;
+        }
+        
         let session = self.session.lock();
         let session_ptr = *session.as_ref()
             .context("VideoToolbox session not initialized")?;
         
+        tracing::debug!("Converting RGB to BGRA");
         // Convert RGB to BGRA (VideoToolbox requirement)
         let bgra_data = rgb_to_bgra(rgb_data, self.settings.width, self.settings.height);
         
@@ -198,12 +196,19 @@ impl VideoEncoder for VideoToolboxEncoder {
         self.output_buffer.lock().clear();
         
         unsafe {
+            tracing::debug!("Creating CVPixelBuffer");
             // Create CVPixelBuffer
-            let pixel_buffer = create_pixel_buffer_from_bgra(
+            let pixel_buffer = match create_pixel_buffer_from_bgra(
                 &bgra_data,
                 self.settings.width,
                 self.settings.height,
-            )?;
+            ) {
+                Ok(pb) => pb,
+                Err(e) => {
+                    tracing::error!("Failed to create CVPixelBuffer: {}", e);
+                    return Err(e);
+                }
+            };
             
             let timestamp = CMTime {
                 value: self.frame_count as i64,
@@ -226,6 +231,7 @@ impl VideoEncoder for VideoToolboxEncoder {
                 ptr::null()
             };
             
+            tracing::debug!("Calling VTCompressionSessionEncodeFrame");
             let status = VTCompressionSessionEncodeFrame(
                 session_ptr,
                 pixel_buffer,
@@ -236,6 +242,8 @@ impl VideoEncoder for VideoToolboxEncoder {
                 ptr::null_mut(),
             );
             
+            tracing::debug!("VTCompressionSessionEncodeFrame returned: {}", status);
+            
             // Release pixel buffer
             CVPixelBufferRelease(pixel_buffer);
             
@@ -244,7 +252,9 @@ impl VideoEncoder for VideoToolboxEncoder {
             }
             
             // Force completion
+            tracing::debug!("Calling VTCompressionSessionCompleteFrames");
             VTCompressionSessionCompleteFrames(session_ptr, timestamp);
+            tracing::debug!("Frame encoding completed");
         }
         
         self.frame_count += 1;
@@ -319,8 +329,15 @@ unsafe fn create_pixel_buffer_from_bgra(
     width: u32,
     height: u32,
 ) -> Result<*mut c_void> {
+    tracing::debug!("create_pixel_buffer_from_bgra: {}x{}, data len: {}", width, height, bgra_data.len());
+    
     let mut pixel_buffer: *mut c_void = ptr::null_mut();
     let bytes_per_row = (width * 4) as usize;
+    let expected_size = bytes_per_row * height as usize;
+    
+    if bgra_data.len() != expected_size {
+        return Err(anyhow::anyhow!("Invalid BGRA data size: expected {}, got {}", expected_size, bgra_data.len()));
+    }
     
     // Create a context to hold the data
     let context = Box::new(PixelBufferContext {
@@ -347,6 +364,7 @@ unsafe fn create_pixel_buffer_from_bgra(
         return Err(anyhow::anyhow!("Failed to create CVPixelBuffer: {}", status));
     }
     
+    tracing::debug!("CVPixelBuffer created successfully");
     Ok(pixel_buffer)
 }
 
@@ -425,11 +443,21 @@ unsafe extern "C" fn output_callback_trampoline(
     output_callback_ref_con: *mut c_void,
     _source_frame_ref_con: *mut c_void,
     status: i32,
-    info_flags: u32,
+    _info_flags: u32,
     sample_buffer: *mut c_void,
 ) {
-    let callback = output_callback_ref_con as *mut Box<dyn Fn(i32, u32, *mut c_void)>;
-    if !callback.is_null() {
-        (*callback)(status, info_flags, sample_buffer);
+    if output_callback_ref_con.is_null() {
+        return;
+    }
+    
+    let encoder = &*(output_callback_ref_con as *const VideoToolboxEncoder);
+    
+    if status == 0 && !sample_buffer.is_null() {
+        // Extract encoded data from sample buffer
+        let data = extract_data_from_sample_buffer(sample_buffer);
+        if !data.is_empty() {
+            let mut buffer = encoder.output_buffer.lock();
+            buffer.extend_from_slice(&data);
+        }
     }
 }

@@ -1,0 +1,14 @@
+    Finished `release` profile [optimized] target(s) in 0.14s
+     Running `target/release/vox_server`
+[2m2025-06-24T11:30:39.338073Z[0m [32m INFO[0m [2mvox_gui::server::server[0m[2m:[0m Server listening on 0.0.0.0:8080
+[2m2025-06-24T11:30:39.338174Z[0m [32m INFO[0m [2mvox_gui::common::encoder[0m[2m:[0m Hardware encoder is available
+[2m2025-06-24T11:30:39.338180Z[0m [32m INFO[0m [2mvox_gui::server::server[0m[2m:[0m Hardware encoder available - using hardware acceleration
+[2m2025-06-24T11:30:39.394471Z[0m [32m INFO[0m [2mvox_gui::common::encoder[0m[2m:[0m Hardware encoder is available
+[2m2025-06-24T11:30:39.439973Z[0m [34mDEBUG[0m [2mvox_gui::platform::macos::video_toolbox[0m[2m:[0m VideoToolbox encode_frame called
+[2m2025-06-24T11:30:39.439981Z[0m [32m INFO[0m [2mvox_gui::platform::macos::video_toolbox[0m[2m:[0m Initializing VideoToolbox session on first frame
+[2m2025-06-24T11:30:39.439983Z[0m [32m INFO[0m [2mvox_gui::platform::macos::video_toolbox[0m[2m:[0m Creating VideoToolbox session for 2560x1440
+[2m2025-06-24T11:30:39.494804Z[0m [32m INFO[0m [2mvox_gui::platform::macos::video_toolbox[0m[2m:[0m VideoToolbox session created successfully
+[2m2025-06-24T11:30:39.496700Z[0m [34mDEBUG[0m [2mvox_gui::platform::macos::video_toolbox[0m[2m:[0m Converting RGB to BGRA
+[2m2025-06-24T11:30:39.504638Z[0m [34mDEBUG[0m [2mvox_gui::platform::macos::video_toolbox[0m[2m:[0m Creating CVPixelBuffer
+[2m2025-06-24T11:30:39.504643Z[0m [34mDEBUG[0m [2mvox_gui::platform::macos::video_toolbox[0m[2m:[0m create_pixel_buffer_from_bgra: 2560x1440, data len: 14745600
+[2m2025-06-24T11:30:39.507847Z[0m [34mDEBUG[0m [2mvox_gui::platform::macos::video_toolbox[0m[2m:[0m CVPixelBuffer created successfully

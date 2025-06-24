@@ -33,9 +33,13 @@ impl ScreenCapture {
         let height = capturer.height();
         
         // Try to create hardware encoder
+        // Ensure dimensions are valid and even (required for many encoders)
+        let encoder_width = (width as u32) & !1;  // Make even
+        let encoder_height = (height as u32) & !1; // Make even
+        
         let encoder_settings = EncoderSettings {
-            width: width as u32,
-            height: height as u32,
+            width: encoder_width,
+            height: encoder_height,
             fps,
             bitrate: 5_000_000, // 5 Mbps default
             keyframe_interval: fps * 2, // Keyframe every 2 seconds
@@ -97,7 +101,26 @@ impl ScreenCapture {
                 
                 // Use hardware encoder if available
                 if let Some(encoder) = &mut self.video_encoder {
-                    match encoder.encode_frame(&rgb_data, force_keyframe) {
+                    // Ensure RGB data matches encoder dimensions
+                    let encoder_width = (self.width as u32) & !1;
+                    let encoder_height = (self.height as u32) & !1;
+                    
+                    // Check if we need to crop the data
+                    let rgb_for_encoder = if self.width as u32 != encoder_width || self.height as u32 != encoder_height {
+                        tracing::debug!("Cropping frame from {}x{} to {}x{}", self.width, self.height, encoder_width, encoder_height);
+                        // Simple crop - just take the top-left portion
+                        let mut cropped = Vec::with_capacity((encoder_width * encoder_height * 3) as usize);
+                        for y in 0..encoder_height as usize {
+                            let src_offset = y * self.width * 3;
+                            let src_end = src_offset + (encoder_width as usize * 3);
+                            cropped.extend_from_slice(&rgb_data[src_offset..src_end]);
+                        }
+                        cropped
+                    } else {
+                        rgb_data.clone()
+                    };
+                    
+                    match encoder.encode_frame(&rgb_for_encoder, force_keyframe) {
                         Ok(encoded_frame) => {
                             return Ok(Some(CapturedFrame {
                                 width: self.width as u32,
