@@ -15,6 +15,7 @@ pub struct VoxApp {
     connection: Option<Arc<Mutex<Connection>>>,
     tx: Option<mpsc::UnboundedSender<Message>>,
     rx: Option<Arc<Mutex<mpsc::UnboundedReceiver<Message>>>>,
+    state_rx: Option<Arc<Mutex<mpsc::UnboundedReceiver<AppState>>>>,
     
     // Screen state
     screen_texture: Option<TextureHandle>,
@@ -46,6 +47,7 @@ impl Default for VoxApp {
             connection: None,
             tx: None,
             rx: None,
+            state_rx: None,
             screen_texture: None,
             screen_size: (1920, 1080),
             last_mouse_pos: egui::Pos2::ZERO,
@@ -322,10 +324,15 @@ impl VoxApp {
         self.connection = Some(connection.clone());
         
         // Create channels for state updates
-        let (state_tx, mut state_rx) = mpsc::unbounded_channel::<AppState>();
+        let (state_tx, state_rx) = mpsc::unbounded_channel::<AppState>();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel::<Message>();
         
         self.rx = Some(Arc::new(Mutex::new(msg_rx)));
+        self.state_rx = Some(Arc::new(Mutex::new(state_rx)));
+        
+        // Channel to send messages to the connection
+        let (conn_tx, mut conn_rx) = mpsc::unbounded_channel::<Message>();
+        self.tx = Some(conn_tx);
         
         // Spawn connection task
         let runtime = self.runtime.clone();
@@ -334,50 +341,36 @@ impl VoxApp {
             runtime.block_on(async move {
                 let mut conn = connection.lock().unwrap();
                 match conn.connect(&addr, &code).await {
-                    Ok((rx, tx)) => {
+                    Ok((mut rx, tx)) => {
                         tracing::info!("Connected successfully");
                         state_tx.send(AppState::Connected).ok();
                         
-                        // Store the sender channel
+                        // Drop the connection lock
                         drop(conn);
                         
+                        // Spawn task to forward outgoing messages
+                        let tx_clone = tx.clone();
+                        tokio::spawn(async move {
+                            while let Some(msg) = conn_rx.recv().await {
+                                if tx_clone.send(msg).is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                        
                         // Forward incoming messages
-                        let mut rx = rx;
                         while let Some(msg) = rx.recv().await {
                             if msg_tx.send(msg).is_err() {
                                 break;
                             }
                         }
+                        
+                        state_tx.send(AppState::Disconnected).ok();
                     }
                     Err(e) => {
                         tracing::error!("Connection failed: {}", e);
                         state_tx.send(AppState::Error(format!("Connection failed: {}", e))).ok();
                     }
-                }
-            });
-        });
-        
-        // Store the outgoing message channel
-        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
-        self.tx = Some(tx);
-        
-        // Spawn task to forward outgoing messages
-        let connection = self.connection.as_ref().unwrap().clone();
-        self.runtime.spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                // Forward to connection when it's ready
-                // For now, just log
-                tracing::debug!("Outgoing message: {:?}", msg);
-            }
-        });
-        
-        // Spawn task to handle state updates
-        let runtime = self.runtime.clone();
-        std::thread::spawn(move || {
-            runtime.block_on(async move {
-                if let Some(new_state) = state_rx.recv().await {
-                    // State will be updated in the main update loop
-                    tracing::info!("State update: {:?}", new_state);
                 }
             });
         });
@@ -390,7 +383,10 @@ impl VoxApp {
         self.state = AppState::Disconnected;
         self.connection = None;
         self.tx = None;
+        self.rx = None;
+        self.state_rx = None;
         self.screen_texture = None;
+        self.access_code.clear();
     }
     
     fn send_message(&self, msg: Message) {
@@ -417,6 +413,15 @@ impl VoxApp {
 
 impl eframe::App for VoxApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Check for state updates
+        if let Some(state_rx) = &self.state_rx {
+            if let Ok(mut rx) = state_rx.try_lock() {
+                if let Ok(new_state) = rx.try_recv() {
+                    self.state = new_state;
+                }
+            }
+        }
+        
         // Process incoming messages
         let mut screen_update = None;
         
