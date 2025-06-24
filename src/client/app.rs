@@ -3,6 +3,8 @@ use egui::{CentralPanel, TopBottomPanel, Context, TextureHandle, ColorImage, Mar
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use crate::common::protocol::{Message, MouseButton, Modifiers};
+use crate::client::connection::Connection;
+use zstd::stream::decode_all;
 
 pub struct VoxApp {
     state: AppState,
@@ -10,13 +12,17 @@ pub struct VoxApp {
     server_address: String,
     
     // Connection state
-    connection: Option<Arc<Mutex<super::connection::Connection>>>,
+    connection: Option<Arc<Mutex<Connection>>>,
     tx: Option<mpsc::UnboundedSender<Message>>,
+    rx: Option<Arc<Mutex<mpsc::UnboundedReceiver<Message>>>>,
     
     // Screen state
     screen_texture: Option<TextureHandle>,
     screen_size: (u32, u32),
     last_mouse_pos: egui::Pos2,
+    
+    // Runtime handle
+    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,15 +35,21 @@ enum AppState {
 
 impl Default for VoxApp {
     fn default() -> Self {
+        let runtime = Arc::new(
+            tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime")
+        );
+        
         Self {
             state: AppState::Disconnected,
             access_code: String::new(),
             server_address: "127.0.0.1:8080".to_string(),
             connection: None,
             tx: None,
+            rx: None,
             screen_texture: None,
             screen_size: (1920, 1080),
             last_mouse_pos: egui::Pos2::ZERO,
+            runtime,
         }
     }
 }
@@ -301,9 +313,74 @@ impl VoxApp {
     
     fn connect(&mut self) {
         self.state = AppState::Connecting;
-        // Connection logic will be implemented in the connection module
-        // For now, just simulate connection
-        self.state = AppState::Connected;
+        
+        let addr = self.server_address.clone();
+        let code = self.access_code.clone();
+        
+        let (connection, _, _) = Connection::new();
+        let connection = Arc::new(Mutex::new(connection));
+        self.connection = Some(connection.clone());
+        
+        // Create channels for state updates
+        let (state_tx, mut state_rx) = mpsc::unbounded_channel::<AppState>();
+        let (msg_tx, msg_rx) = mpsc::unbounded_channel::<Message>();
+        
+        self.rx = Some(Arc::new(Mutex::new(msg_rx)));
+        
+        // Spawn connection task
+        let runtime = self.runtime.clone();
+        
+        std::thread::spawn(move || {
+            runtime.block_on(async move {
+                let mut conn = connection.lock().unwrap();
+                match conn.connect(&addr, &code).await {
+                    Ok((rx, tx)) => {
+                        tracing::info!("Connected successfully");
+                        state_tx.send(AppState::Connected).ok();
+                        
+                        // Store the sender channel
+                        drop(conn);
+                        
+                        // Forward incoming messages
+                        let mut rx = rx;
+                        while let Some(msg) = rx.recv().await {
+                            if msg_tx.send(msg).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Connection failed: {}", e);
+                        state_tx.send(AppState::Error(format!("Connection failed: {}", e))).ok();
+                    }
+                }
+            });
+        });
+        
+        // Store the outgoing message channel
+        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+        self.tx = Some(tx);
+        
+        // Spawn task to forward outgoing messages
+        let connection = self.connection.as_ref().unwrap().clone();
+        self.runtime.spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                // Forward to connection when it's ready
+                // For now, just log
+                tracing::debug!("Outgoing message: {:?}", msg);
+            }
+        });
+        
+        // Spawn task to handle state updates
+        let runtime = self.runtime.clone();
+        std::thread::spawn(move || {
+            runtime.block_on(async move {
+                if let Some(new_state) = state_rx.recv().await {
+                    // State will be updated in the main update loop
+                    tracing::info!("State update: {:?}", new_state);
+                }
+            });
+        });
     }
     
     fn disconnect(&mut self) {
@@ -340,6 +417,45 @@ impl VoxApp {
 
 impl eframe::App for VoxApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Process incoming messages
+        let mut screen_update = None;
+        
+        if let Some(rx) = &self.rx {
+            if let Ok(mut rx) = rx.try_lock() {
+                while let Ok(msg) = rx.try_recv() {
+                    match msg {
+                        Message::ScreenFrame { timestamp: _, width, height, data, compressed } => {
+                            // Decompress if needed
+                            let rgb_data = if compressed {
+                                match decode_all(&data[..]) {
+                                    Ok(decompressed) => decompressed,
+                                    Err(e) => {
+                                        tracing::error!("Failed to decompress frame: {}", e);
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                data
+                            };
+                            
+                            screen_update = Some((width, height, rgb_data));
+                        }
+                        Message::AuthResponse { success, session_token: _ } => {
+                            if !success {
+                                self.state = AppState::Error("Authentication failed".to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        
+        // Apply screen update outside of the lock
+        if let Some((width, height, rgb_data)) = screen_update {
+            self.update_screen(ctx, width, height, &rgb_data);
+        }
+        
         match self.state {
             AppState::Disconnected | AppState::Connecting | AppState::Error(_) => {
                 self.show_connection_ui(ctx);
