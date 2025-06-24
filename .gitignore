@@ -1,6 +1,47 @@
-/target
-libs
-*.log
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 .DS_Store
-node_modules/
-dist/
+
+# Security
+*.pem
+*.key
+*.cert
+*.crt
+*.p12
+*.pfx
+/keys/
+/certs/
+
+# Config files with secrets
+config.toml
+secrets.toml
+.env
+
+# Logs
+*.log
+/logs/
+
+# OS specific
+Thumbs.db
+desktop.ini
+
+# Build artifacts
+/dist/
+/build/
+/out/
+
+# Test data
+/test_data/
+/captures/
+
+# Keep libs folder
+!libs/
