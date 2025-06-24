@@ -1,8 +1,7 @@
 use rand::{thread_rng, Rng};
 use sha2::{Sha256, Digest};
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
-use anyhow::Result;
 
 const CODE_LENGTH: usize = 6;
 const CODE_VALIDITY_SECS: u64 = 300; // 5 minutes

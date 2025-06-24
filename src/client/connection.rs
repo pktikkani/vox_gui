@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tracing::{info, debug, error};
 
 pub struct Connection {
+    #[allow(dead_code)]
     stream: Option<TcpStream>,
     crypto: Option<Arc<Mutex<CryptoSession>>>,
     session_token: Option<String>,

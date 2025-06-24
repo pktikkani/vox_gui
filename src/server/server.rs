@@ -1,5 +1,5 @@
 use crate::common::{
-    auth::{AccessCode, AuthRequest, AuthResponse, SessionToken},
+    auth::{AccessCode, AuthResponse, SessionToken},
     protocol::Message,
     crypto::{CryptoSession, KeyExchange},
 };
@@ -10,9 +10,9 @@ use crate::server::{
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncWrite};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use anyhow::{Result, Context};
-use tracing::{info, warn, error, debug};
+use tracing::{info, error, debug};
 use std::collections::HashMap;
 use uuid::Uuid;
 use bytes::{BytesMut, Buf};
@@ -23,7 +23,9 @@ pub struct Server {
 }
 
 struct ClientSession {
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     token: SessionToken,
     crypto: Arc<Mutex<CryptoSession>>,
     tx: mpsc::UnboundedSender<Vec<u8>>,
@@ -72,7 +74,7 @@ impl Server {
 }
 
 async fn handle_client(
-    mut socket: TcpStream,
+    socket: TcpStream,
     access_code: Arc<RwLock<Option<AccessCode>>>,
     sessions: Arc<RwLock<HashMap<String, ClientSession>>>,
 ) -> Result<()> {
@@ -124,6 +126,12 @@ async fn handle_client(
             
             match message {
                 Message::AuthRequest { code } => {
+                    // Ensure key exchange has happened first
+                    if crypto_session.is_none() {
+                        error!("Authentication attempted before key exchange");
+                        return Err(anyhow::anyhow!("Key exchange must happen before authentication"));
+                    }
+                    
                     let response = handle_auth(&code, &access_code).await;
                     
                     if response.success {
@@ -133,11 +141,11 @@ async fn handle_client(
                         let id = Uuid::new_v4().to_string();
                         session_id = Some(id.clone());
                         
-                        // Store session
+                        // Store session with the current crypto session
                         let session = ClientSession {
                             id: id.clone(),
                             token: session_token,
-                            crypto: Arc::new(Mutex::new(CryptoSession::from_shared_secret(&[0; 32])?)), // Placeholder
+                            crypto: crypto_session.as_ref().unwrap().clone(),
                             tx: tx.clone(),
                         };
                         
@@ -179,14 +187,7 @@ async fn handle_client(
                     
                     // Create crypto session
                     let crypto = Arc::new(Mutex::new(CryptoSession::from_shared_secret(&shared_secret)?));
-                    crypto_session = Some(crypto.clone());
-                    
-                    // Update session crypto if authenticated
-                    if let Some(id) = &session_id {
-                        if let Some(session) = sessions.write().await.get_mut(id) {
-                            session.crypto = crypto;
-                        }
-                    }
+                    crypto_session = Some(crypto);
                     
                     debug!("Key exchange completed");
                 }

@@ -1,4 +1,3 @@
-use crate::common::protocol::Message;
 use anyhow::Result;
 
 pub struct Connection {
