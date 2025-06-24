@@ -88,7 +88,8 @@ pub mod hardware {
     // VideoToolbox encoder for macOS
     pub struct VideoToolboxEncoder {
         settings: EncoderSettings,
-        session: Option<*mut c_void>, // VTCompressionSessionRef
+        #[allow(dead_code)]
+        session: Option<*mut c_void>, // VTCompressionSessionRef - placeholder for future implementation
     }
     
     unsafe impl Send for VideoToolboxEncoder {}

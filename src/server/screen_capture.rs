@@ -63,14 +63,14 @@ impl ScreenCapture {
                 // Convert BGRA to RGB
                 let mut rgb_data = bgra_to_rgb(&frame_data, self.width, self.height);
                 
-                // Apply quality scaling if needed
+                // Apply quality scaling if needed (disabled for now to avoid pixelation)
                 let scale = self.quality_mode.resolution_scale();
-                if scale < 1.0 {
+                if scale < 1.0 && false { // Temporarily disabled
                     rgb_data = self.scale_frame(&rgb_data, scale)?;
                 }
                 
-                // Determine if this should be a keyframe
-                let force_keyframe = self.frame_count % self.quality_mode.keyframe_interval() as u64 == 0;
+                // For now, always send keyframes to avoid artifacts
+                let force_keyframe = true; // TODO: Re-enable delta encoding when client properly handles it
                 
                 // Process frame with delta encoding
                 let processed = self.frame_processor.process_frame(&rgb_data, force_keyframe)?;

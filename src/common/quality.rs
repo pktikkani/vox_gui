@@ -34,11 +34,11 @@ impl QualityMode {
     
     pub fn compression_level(&self) -> i32 {
         match self {
-            QualityMode::Ultra => 1,    // Fastest compression
-            QualityMode::High => 3,
-            QualityMode::Medium => 6,
-            QualityMode::Low => 9,
-            QualityMode::Minimal => 12, // Maximum compression
+            QualityMode::Ultra => 0,    // Best quality, least compression
+            QualityMode::High => 1,     // Very good quality
+            QualityMode::Medium => 3,   // Good quality
+            QualityMode::Low => 6,      // Acceptable quality
+            QualityMode::Minimal => 9,  // Maximum compression
         }
     }
     
