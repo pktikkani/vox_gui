@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use crate::common::protocol::{Message, MouseButton, Modifiers};
 use crate::client::connection::Connection;
+use crate::common::quality::{QualityMode, QualityMetrics};
+use crate::common::frame_processor::{FrameProcessor, ProcessedFrame, FrameType};
 use zstd::stream::decode_all;
 
 pub struct VoxApp {
@@ -21,6 +23,13 @@ pub struct VoxApp {
     screen_texture: Option<TextureHandle>,
     screen_size: (u32, u32),
     last_mouse_pos: egui::Pos2,
+    current_frame: Option<Vec<u8>>,
+    frame_processor: Option<FrameProcessor>,
+    
+    // Quality control
+    current_quality: QualityMode,
+    quality_metrics: Option<QualityMetrics>,
+    show_quality_menu: bool,
     
     // Runtime handle
     runtime: Arc<tokio::runtime::Runtime>,
@@ -51,6 +60,11 @@ impl Default for VoxApp {
             screen_texture: None,
             screen_size: (1920, 1080),
             last_mouse_pos: egui::Pos2::ZERO,
+            current_frame: None,
+            frame_processor: None,
+            current_quality: QualityMode::High,
+            quality_metrics: None,
+            show_quality_menu: false,
             runtime,
         }
     }
@@ -207,6 +221,21 @@ impl VoxApp {
                         
                         if ui.add(disconnect_button).clicked() {
                             self.disconnect();
+                        }
+                        
+                        ui.separator();
+                        
+                        // Quality selector
+                        let quality_text = format!("Quality: {:?}", self.current_quality);
+                        if ui.button(quality_text).clicked() {
+                            self.show_quality_menu = !self.show_quality_menu;
+                        }
+                        
+                        // Show quality metrics if available
+                        if let Some(metrics) = &self.quality_metrics {
+                            ui.separator();
+                            ui.label(format!("{:.1} Mbps", metrics.bandwidth_mbps));
+                            ui.label(format!("{:.0}ms", metrics.average_rtt.as_millis()));
                         }
                     });
                 });
@@ -429,7 +458,7 @@ impl eframe::App for VoxApp {
             if let Ok(mut rx) = rx.try_lock() {
                 while let Ok(msg) = rx.try_recv() {
                     match msg {
-                        Message::ScreenFrame { timestamp: _, width, height, data, compressed } => {
+                        Message::ScreenFrame { timestamp, width, height, data, compressed } => {
                             // Decompress if needed
                             let rgb_data = if compressed {
                                 match decode_all(&data[..]) {
@@ -443,7 +472,57 @@ impl eframe::App for VoxApp {
                                 data
                             };
                             
+                            // Initialize frame processor if needed
+                            if self.frame_processor.is_none() {
+                                self.frame_processor = Some(FrameProcessor::new(width, height));
+                            }
+                            
+                            // Store as current frame
+                            self.current_frame = Some(rgb_data.clone());
                             screen_update = Some((width, height, rgb_data));
+                            
+                            // Send acknowledgment
+                            self.send_message(Message::FrameAck {
+                                timestamp,
+                                received_at: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as u64,
+                            });
+                        }
+                        Message::DeltaFrame { timestamp, tiles } => {
+                            // Apply delta to current frame
+                            if let Some(current) = &mut self.current_frame {
+                                let delta = ProcessedFrame {
+                                    frame_type: FrameType::DeltaFrame,
+                                    data: bytes::Bytes::new(),
+                                    width: self.screen_size.0,
+                                    height: self.screen_size.1,
+                                    tiles: Some(tiles.clone()),
+                                };
+                                
+                                if let Some(processor) = &self.frame_processor {
+                                    if processor.apply_delta(current, &delta).is_ok() {
+                                        screen_update = Some((self.screen_size.0, self.screen_size.1, current.clone()));
+                                    }
+                                }
+                            }
+                            
+                            // Send acknowledgment
+                            self.send_message(Message::FrameAck {
+                                timestamp,
+                                received_at: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as u64,
+                            });
+                        }
+                        Message::QualityChange { mode } => {
+                            self.current_quality = mode;
+                            tracing::info!("Quality changed to: {:?}", mode);
+                        }
+                        Message::QualityMetricsReport { metrics } => {
+                            self.quality_metrics = Some(metrics);
                         }
                         Message::AuthResponse { success, session_token: _ } => {
                             if !success {
@@ -467,6 +546,36 @@ impl eframe::App for VoxApp {
             }
             AppState::Connected => {
                 self.show_remote_screen(ctx);
+                
+                // Show quality menu if requested
+                if self.show_quality_menu {
+                    egui::Window::new("Quality Settings")
+                        .collapsible(false)
+                        .auto_sized()
+                        .show(ctx, |ui| {
+                            ui.label("Select video quality:");
+                            ui.separator();
+                            
+                            for mode in [
+                                QualityMode::Ultra,
+                                QualityMode::High,
+                                QualityMode::Medium,
+                                QualityMode::Low,
+                                QualityMode::Minimal,
+                            ] {
+                                let selected = self.current_quality == mode;
+                                if ui.selectable_label(selected, format!("{:?} - {:.0} Mbps", mode, mode.bandwidth_requirement())).clicked() {
+                                    self.send_message(Message::RequestQualityChange { mode });
+                                    self.show_quality_menu = false;
+                                }
+                            }
+                            
+                            ui.separator();
+                            if ui.button("Close").clicked() {
+                                self.show_quality_menu = false;
+                            }
+                        });
+                }
             }
         }
         

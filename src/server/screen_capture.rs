@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, Context};
 use bytes::Bytes;
 use zstd::stream::encode_all;
+use crate::common::quality::QualityMode;
+use crate::common::frame_processor::FrameProcessor;
 
 pub struct ScreenCapture {
     capturer: Capturer,
@@ -11,6 +13,9 @@ pub struct ScreenCapture {
     height: usize,
     last_frame_time: Instant,
     frame_interval: Duration,
+    quality_mode: QualityMode,
+    frame_processor: FrameProcessor,
+    frame_count: u64,
 }
 
 impl ScreenCapture {
@@ -30,7 +35,15 @@ impl ScreenCapture {
             height,
             last_frame_time: Instant::now(),
             frame_interval: Duration::from_millis(1000 / fps as u64),
+            quality_mode: QualityMode::High,
+            frame_processor: FrameProcessor::new(width as u32, height as u32),
+            frame_count: 0,
         })
+    }
+    
+    pub fn set_quality(&mut self, quality: QualityMode) {
+        self.quality_mode = quality;
+        self.frame_interval = Duration::from_millis(1000 / quality.target_fps() as u64);
     }
     
     pub fn capture_frame(&mut self) -> Result<Option<CapturedFrame>> {
@@ -42,24 +55,73 @@ impl ScreenCapture {
         match self.capturer.frame() {
             Ok(frame) => {
                 self.last_frame_time = Instant::now();
+                self.frame_count += 1;
                 
                 // Clone the frame data to avoid borrow issues
                 let frame_data = frame.to_vec();
                 
                 // Convert BGRA to RGB
-                let rgb_data = bgra_to_rgb(&frame_data, self.width, self.height);
+                let mut rgb_data = bgra_to_rgb(&frame_data, self.width, self.height);
                 
-                // Compress the frame
-                let compressed = encode_all(&rgb_data[..], 3)?;
+                // Apply quality scaling if needed
+                let scale = self.quality_mode.resolution_scale();
+                if scale < 1.0 {
+                    rgb_data = self.scale_frame(&rgb_data, scale)?;
+                }
+                
+                // Determine if this should be a keyframe
+                let force_keyframe = self.frame_count % self.quality_mode.keyframe_interval() as u64 == 0;
+                
+                // Process frame with delta encoding
+                let processed = self.frame_processor.process_frame(&rgb_data, force_keyframe)?;
+                
+                // Compress based on quality mode
+                let compression_level = self.quality_mode.compression_level();
+                let compressed_data = match processed.frame_type {
+                    crate::common::frame_processor::FrameType::KeyFrame => {
+                        encode_all(&processed.data[..], compression_level)?
+                    }
+                    crate::common::frame_processor::FrameType::DeltaFrame => {
+                        // For delta frames, compress tiles individually
+                        if let Some(tiles) = &processed.tiles {
+                            let mut compressed_tiles = Vec::new();
+                            for tile in tiles {
+                                let compressed = encode_all(&tile.data[..], compression_level)?;
+                                compressed_tiles.push(crate::common::frame_processor::TileData {
+                                    x: tile.x,
+                                    y: tile.y,
+                                    width: tile.width,
+                                    height: tile.height,
+                                    data: Bytes::from(compressed),
+                                });
+                            }
+                            // Return delta frame data
+                            return Ok(Some(CapturedFrame {
+                                width: processed.width,
+                                height: processed.height,
+                                data: Bytes::new(), // No full data for delta
+                                timestamp: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as u64,
+                                frame_type: processed.frame_type,
+                                tiles: Some(compressed_tiles),
+                            }));
+                        }
+                        vec![]
+                    }
+                };
                 
                 Ok(Some(CapturedFrame {
-                    width: self.width as u32,
-                    height: self.height as u32,
-                    data: Bytes::from(compressed),
+                    width: processed.width,
+                    height: processed.height,
+                    data: Bytes::from(compressed_data),
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_millis() as u64,
+                    frame_type: processed.frame_type,
+                    tiles: None,
                 }))
             }
             Err(ref e) if e.kind() == WouldBlock => {
@@ -68,6 +130,32 @@ impl ScreenCapture {
             }
             Err(e) => Err(e.into()),
         }
+    }
+    
+    fn scale_frame(&self, rgb_data: &[u8], scale: f32) -> Result<Vec<u8>> {
+        let new_width = (self.width as f32 * scale) as u32;
+        let new_height = (self.height as f32 * scale) as u32;
+        
+        // Simple nearest-neighbor scaling for speed
+        let mut scaled = vec![0u8; (new_width * new_height * 3) as usize];
+        
+        for y in 0..new_height {
+            for x in 0..new_width {
+                let src_x = (x as f32 / scale) as usize;
+                let src_y = (y as f32 / scale) as usize;
+                
+                if src_x < self.width && src_y < self.height {
+                    let src_idx = (src_y * self.width + src_x) * 3;
+                    let dst_idx = ((y * new_width + x) * 3) as usize;
+                    
+                    if src_idx + 3 <= rgb_data.len() && dst_idx + 3 <= scaled.len() {
+                        scaled[dst_idx..dst_idx + 3].copy_from_slice(&rgb_data[src_idx..src_idx + 3]);
+                    }
+                }
+            }
+        }
+        
+        Ok(scaled)
     }
     
     
@@ -95,4 +183,6 @@ pub struct CapturedFrame {
     pub height: u32,
     pub data: Bytes,
     pub timestamp: u64,
+    pub frame_type: crate::common::frame_processor::FrameType,
+    pub tiles: Option<Vec<crate::common::frame_processor::TileData>>,
 }

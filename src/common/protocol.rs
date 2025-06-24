@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use bytes::Bytes;
+use crate::common::quality::{QualityMode, QualityMetrics};
+use crate::common::frame_processor::TileData;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum Message {
@@ -20,6 +22,17 @@ pub enum Message {
         compressed: bool,
     },
     
+    // Optimized frame with delta encoding
+    DeltaFrame {
+        timestamp: u64,
+        tiles: Vec<TileData>,
+    },
+    
+    // Quality control
+    QualityChange { mode: QualityMode },
+    QualityMetricsReport { metrics: QualityMetrics },
+    RequestQualityChange { mode: QualityMode },
+    
     // Input events
     MouseMove { x: i32, y: i32 },
     MouseClick { button: MouseButton, pressed: bool, x: i32, y: i32 },
@@ -32,6 +45,10 @@ pub enum Message {
     Ping { timestamp: u64 },
     Pong { timestamp: u64 },
     Disconnect,
+    
+    // Performance metrics
+    FrameAck { timestamp: u64, received_at: u64 },
+    NetworkStats { bytes_sent: usize, rtt_ms: u64 },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]

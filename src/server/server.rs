@@ -2,6 +2,7 @@ use crate::common::{
     auth::{AccessCode, AuthResponse, SessionToken},
     protocol::Message,
     crypto::{CryptoSession, KeyExchange},
+    quality::AdaptiveQualityController,
 };
 use crate::server::{
     screen_capture::ScreenCapture,
@@ -29,6 +30,8 @@ struct ClientSession {
     token: SessionToken,
     crypto: Arc<Mutex<CryptoSession>>,
     tx: mpsc::UnboundedSender<Vec<u8>>,
+    quality_controller: Arc<Mutex<AdaptiveQualityController>>,
+    last_frame_time: Arc<Mutex<std::time::Instant>>,
 }
 
 impl Server {
@@ -147,6 +150,8 @@ async fn handle_client(
                             token: session_token,
                             crypto: crypto_session.as_ref().unwrap().clone(),
                             tx: tx.clone(),
+                            quality_controller: Arc::new(Mutex::new(AdaptiveQualityController::new())),
+                            last_frame_time: Arc::new(Mutex::new(std::time::Instant::now())),
                         };
                         
                         sessions.write().await.insert(id, session);
@@ -194,7 +199,14 @@ async fn handle_client(
                 
                 Message::StartStream => {
                     info!("Client requested stream start");
-                    // Screen capture is already running
+                    // Send initial quality mode
+                    if let Some(id) = &session_id {
+                        if let Some(session) = sessions.read().await.get(id) {
+                            let quality = session.quality_controller.lock().await.get_current_quality();
+                            let msg = Message::QualityChange { mode: quality };
+                            send_encrypted(&tx, &msg, &crypto_session).await?;
+                        }
+                    }
                 }
                 
                 Message::StopStream => {
@@ -212,6 +224,30 @@ async fn handle_client(
                 
                 Message::KeyEvent { key, pressed, modifiers } => {
                     handle_key_event(&key, pressed, modifiers).await?;
+                }
+                
+                Message::FrameAck { timestamp, received_at } => {
+                    // Update quality metrics
+                    if let Some(id) = &session_id {
+                        if let Some(session) = sessions.read().await.get(id) {
+                            let rtt = received_at.saturating_sub(timestamp);
+                            let mut controller = session.quality_controller.lock().await;
+                            controller.update_metrics(0, std::time::Duration::from_millis(rtt));
+                        }
+                    }
+                }
+                
+                Message::RequestQualityChange { mode } => {
+                    if let Some(id) = &session_id {
+                        if let Some(session) = sessions.read().await.get(id) {
+                            let mut controller = session.quality_controller.lock().await;
+                            controller.force_quality(Some(mode));
+                            
+                            // Send confirmation
+                            let msg = Message::QualityChange { mode };
+                            send_encrypted(&tx, &msg, &crypto_session).await?;
+                        }
+                    }
                 }
                 
                 Message::Disconnect => {
@@ -283,22 +319,58 @@ async fn screen_capture_loop(
     
     // Process frames in async context
     while let Some(frame) = rx.recv().await {
-        let message = Message::ScreenFrame {
-            timestamp: frame.timestamp,
-            width: frame.width,
-            height: frame.height,
-            data: frame.data.to_vec(),
-            compressed: true,
-        };
+        let sessions_guard = sessions.read().await;
         
-        let serialized = message.serialize()?;
-        
-        // Send to all connected clients
-        let sessions = sessions.read().await;
-        for (_, session) in sessions.iter() {
-            let crypto = session.crypto.lock().await;
-            if let Ok(encrypted) = crypto.encrypt(&serialized) {
-                let _ = session.tx.send(encrypted);
+        for (_, session) in sessions_guard.iter() {
+            // Check quality settings for this client
+            let mut quality_controller = session.quality_controller.lock().await;
+            let quality = quality_controller.get_recommended_quality();
+            
+            // Update frame time and metrics
+            let now = std::time::Instant::now();
+            let last_time = *session.last_frame_time.lock().await;
+            let frame_time = now.duration_since(last_time);
+            *session.last_frame_time.lock().await = now;
+            
+            // Skip frame if it's too soon for this quality level
+            let target_interval = std::time::Duration::from_millis(1000 / quality.target_fps() as u64);
+            if frame_time < target_interval {
+                continue;
+            }
+            
+            // Create appropriate message based on frame type
+            let message = match frame.frame_type {
+                crate::common::frame_processor::FrameType::KeyFrame => {
+                    Message::ScreenFrame {
+                        timestamp: frame.timestamp,
+                        width: frame.width,
+                        height: frame.height,
+                        data: frame.data.to_vec(),
+                        compressed: true,
+                    }
+                }
+                crate::common::frame_processor::FrameType::DeltaFrame => {
+                    if let Some(tiles) = &frame.tiles {
+                        Message::DeltaFrame {
+                            timestamp: frame.timestamp,
+                            tiles: tiles.clone(),
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            
+            // Serialize and encrypt
+            if let Ok(serialized) = message.serialize() {
+                let crypto = session.crypto.lock().await;
+                if let Ok(encrypted) = crypto.encrypt(&serialized) {
+                    // Update metrics with frame size
+                    quality_controller.update_metrics(encrypted.len(), frame_time);
+                    
+                    // Send frame
+                    let _ = session.tx.send(encrypted);
+                }
             }
         }
     }

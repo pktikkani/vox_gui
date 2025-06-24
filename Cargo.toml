@@ -17,8 +17,9 @@ captrs = { version = "0.3", optional = true }
 tokio = { version = "1.40", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 quinn = "0.11"  # QUIC protocol for better performance
-rustls = "0.23"  # TLS encryption
+rustls = { version = "0.23", default-features = false, features = ["ring"] }  # TLS encryption
 rustls-pemfile = "2.1"
+rcgen = "0.13"  # Certificate generation
 
 # Authentication & Security
 argon2 = "0.5"  # Password hashing
@@ -33,6 +34,7 @@ ed25519-dalek = "2.0"  # Digital signatures
 webp = "0.3"
 vpx = { version = "0.1", optional = true }  # VP8/VP9 codec
 zstd = "0.13"  # Fast compression
+image = "0.25"  # Image processing
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -54,6 +56,7 @@ bytes = "1.7"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 env_logger = "0.11"
 futures = "0.3"
+clap = { version = "4.5", features = ["derive"] }
 
 # Platform-specific dependencies
 [target.'cfg(windows)'.dependencies]
