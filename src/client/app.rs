@@ -244,16 +244,29 @@ impl VoxApp {
         CentralPanel::default().show(ctx, |ui| {
             let available_size = ui.available_size();
             
+            // Calculate scaled image dimensions and position
+            let image_size = egui::Vec2::new(
+                self.screen_size.0 as f32,
+                self.screen_size.1 as f32,
+            );
+            let scale = (available_size.x / image_size.x).min(available_size.y / image_size.y);
+            let scaled_size = image_size * scale;
+            
+            // Calculate the centered image rect
+            let image_rect = egui::Rect::from_center_size(
+                ui.available_rect_before_wrap().center(),
+                scaled_size,
+            );
+            
             // Handle mouse input
             if let Some(hover_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                let rect = ui.available_rect_before_wrap();
-                if rect.contains(hover_pos) {
-                    // Convert UI coordinates to screen coordinates
-                    let relative_x = (hover_pos.x - rect.left()) / rect.width();
-                    let relative_y = (hover_pos.y - rect.top()) / rect.height();
+                if image_rect.contains(hover_pos) {
+                    // Convert UI coordinates to screen coordinates relative to the actual image
+                    let relative_x = ((hover_pos.x - image_rect.left()) / image_rect.width()).clamp(0.0, 1.0);
+                    let relative_y = ((hover_pos.y - image_rect.top()) / image_rect.height()).clamp(0.0, 1.0);
                     
-                    let screen_x = (relative_x * self.screen_size.0 as f32) as i32;
-                    let screen_y = (relative_y * self.screen_size.1 as f32) as i32;
+                    let screen_x = (relative_x * self.screen_size.0 as f32).round() as i32;
+                    let screen_y = (relative_y * self.screen_size.1 as f32).round() as i32;
                     
                     // Send mouse move if position changed significantly
                     let new_pos = egui::Pos2::new(screen_x as f32, screen_y as f32);
@@ -322,15 +335,6 @@ impl VoxApp {
             
             // Display the remote screen
             if let Some(texture) = &self.screen_texture {
-                let size = egui::Vec2::new(
-                    self.screen_size.0 as f32,
-                    self.screen_size.1 as f32,
-                );
-                
-                // Scale to fit available space
-                let scale = (available_size.x / size.x).min(available_size.y / size.y);
-                let scaled_size = size * scale;
-                
                 ui.centered_and_justified(|ui| {
                     ui.image((texture.id(), scaled_size));
                 });
