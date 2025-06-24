@@ -49,15 +49,15 @@ impl VideoEncoder for SoftwareEncoder {
         let is_keyframe = force_keyframe || self.frame_count % self.settings.keyframe_interval as u64 == 0;
         self.frame_count += 1;
         
-        // Use WebP encoding for now
+        // Use WebP lossless encoding for better quality
         let encoder = webp::Encoder::from_rgb(
             rgb_data,
             self.settings.width,
             self.settings.height,
         );
         
-        let quality = if is_keyframe { 95.0 } else { 85.0 };
-        let encoded = encoder.encode(quality);
+        // Use lossless encoding to avoid compression artifacts
+        let encoded = encoder.encode_lossless();
         
         Ok(EncodedFrame {
             data: Bytes::from(encoded.to_vec()),
@@ -79,114 +79,40 @@ impl VideoEncoder for SoftwareEncoder {
     }
 }
 
-// Platform-specific hardware encoders
+// Re-export platform-specific hardware encoders
 #[cfg(target_os = "macos")]
-pub mod hardware {
-    use super::*;
-    use std::ffi::c_void;
-    
-    // VideoToolbox encoder for macOS
-    pub struct VideoToolboxEncoder {
-        settings: EncoderSettings,
-        #[allow(dead_code)]
-        session: Option<*mut c_void>, // VTCompressionSessionRef - placeholder for future implementation
-    }
-    
-    unsafe impl Send for VideoToolboxEncoder {}
-    unsafe impl Sync for VideoToolboxEncoder {}
-    
-    impl VideoToolboxEncoder {
-        pub fn new(settings: EncoderSettings) -> Result<Self> {
-            // For now, fall back to software encoding
-            // Full VideoToolbox implementation would require Objective-C bindings
-            Ok(Self {
-                settings,
-                session: None,
-            })
-        }
-    }
-    
-    impl VideoEncoder for VideoToolboxEncoder {
-        fn encode_frame(&mut self, rgb_data: &[u8], force_keyframe: bool) -> Result<EncodedFrame> {
-            // Fallback to software encoding for now
-            let mut sw_encoder = SoftwareEncoder::new(self.settings)?;
-            sw_encoder.encode_frame(rgb_data, force_keyframe)
-        }
-        
-        fn get_type(&self) -> EncoderType {
-            EncoderType::Hardware
-        }
-        
-        fn update_settings(&mut self, settings: EncoderSettings) -> Result<()> {
-            self.settings = settings;
-            Ok(())
-        }
-    }
-}
+pub use crate::platform::macos::video_toolbox::VideoToolboxEncoder as HardwareEncoder;
 
 #[cfg(windows)]
-pub mod hardware {
-    use super::*;
-    
-    // NVENC or Quick Sync encoder for Windows
-    pub struct WindowsHardwareEncoder {
-        settings: EncoderSettings,
-    }
-    
-    impl WindowsHardwareEncoder {
-        pub fn new(settings: EncoderSettings) -> Result<Self> {
-            Ok(Self { settings })
-        }
-    }
-    
-    impl VideoEncoder for WindowsHardwareEncoder {
-        fn encode_frame(&mut self, rgb_data: &[u8], force_keyframe: bool) -> Result<EncodedFrame> {
-            // Fallback to software encoding for now
-            let mut sw_encoder = SoftwareEncoder::new(self.settings)?;
-            sw_encoder.encode_frame(rgb_data, force_keyframe)
-        }
-        
-        fn get_type(&self) -> EncoderType {
-            EncoderType::Hardware
-        }
-        
-        fn update_settings(&mut self, settings: EncoderSettings) -> Result<()> {
-            self.settings = settings;
-            Ok(())
-        }
+pub use crate::platform::windows::media_foundation::MediaFoundationEncoder as HardwareEncoder;
+
+#[cfg(target_os = "linux")]
+pub struct HardwareEncoder {
+    settings: EncoderSettings,
+}
+
+#[cfg(target_os = "linux")]
+impl HardwareEncoder {
+    pub fn new(settings: EncoderSettings) -> Result<Self> {
+        Ok(Self { settings })
     }
 }
 
 #[cfg(target_os = "linux")]
-pub mod hardware {
-    use super::*;
-    
-    // VAAPI encoder for Linux
-    pub struct VaapiEncoder {
-        settings: EncoderSettings,
+impl VideoEncoder for HardwareEncoder {
+    fn encode_frame(&mut self, rgb_data: &[u8], force_keyframe: bool) -> Result<EncodedFrame> {
+        // Fallback to software encoding for now on Linux
+        let mut sw_encoder = SoftwareEncoder::new(self.settings)?;
+        sw_encoder.encode_frame(rgb_data, force_keyframe)
     }
     
-    impl VaapiEncoder {
-        pub fn new(settings: EncoderSettings) -> Result<Self> {
-            Ok(Self { settings })
-        }
+    fn get_type(&self) -> EncoderType {
+        EncoderType::Hardware
     }
     
-    impl VideoEncoder for VaapiEncoder {
-        fn encode_frame(&mut self, rgb_data: &[u8], force_keyframe: bool) -> Result<EncodedFrame> {
-            // Fallback to software encoding for now
-            let mut sw_encoder = SoftwareEncoder::new(self.settings)?;
-            sw_encoder.encode_frame(rgb_data, force_keyframe)
-        }
-        
-        fn get_type(&self) -> EncoderType {
-            EncoderType::Hardware
-        }
-        
-        fn update_settings(&mut self, settings: EncoderSettings) -> Result<()> {
-            self.settings = settings;
-            Ok(())
-        }
+    fn update_settings(&mut self, settings: EncoderSettings) -> Result<()> {
+        self.settings = settings;
+        Ok(())
     }
 }
 
@@ -203,40 +129,34 @@ impl EncoderFactory {
                 Ok(Box::new(SoftwareEncoder::new(settings)?))
             }
             EncoderType::Hardware => {
-                #[cfg(target_os = "macos")]
-                {
-                    match hardware::VideoToolboxEncoder::new(settings) {
-                        Ok(encoder) => Ok(Box::new(encoder)),
-                        Err(_) => Ok(Box::new(SoftwareEncoder::new(settings)?)),
+                match HardwareEncoder::new(settings) {
+                    Ok(encoder) => Ok(Box::new(encoder)),
+                    Err(e) => {
+                        tracing::warn!("Hardware encoder failed: {}, falling back to software", e);
+                        Ok(Box::new(SoftwareEncoder::new(settings)?))
                     }
-                }
-                
-                #[cfg(windows)]
-                {
-                    match hardware::WindowsHardwareEncoder::new(settings) {
-                        Ok(encoder) => Ok(Box::new(encoder)),
-                        Err(_) => Ok(Box::new(SoftwareEncoder::new(settings)?)),
-                    }
-                }
-                
-                #[cfg(target_os = "linux")]
-                {
-                    match hardware::VaapiEncoder::new(settings) {
-                        Ok(encoder) => Ok(Box::new(encoder)),
-                        Err(_) => Ok(Box::new(SoftwareEncoder::new(settings)?)),
-                    }
-                }
-                
-                #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
-                {
-                    Ok(Box::new(SoftwareEncoder::new(settings)?))
                 }
             }
         }
     }
     
     pub fn is_hardware_available() -> bool {
-        // In a real implementation, this would check for hardware encoder availability
-        false
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            // Try to create a test encoder
+            let test_settings = EncoderSettings {
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                bitrate: 5_000_000,
+                keyframe_interval: 60,
+            };
+            HardwareEncoder::new(test_settings).is_ok()
+        }
+        
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            false
+        }
     }
 }

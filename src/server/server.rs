@@ -297,6 +297,17 @@ async fn handle_auth(
 async fn screen_capture_loop(
     sessions: Arc<RwLock<HashMap<String, ClientSession>>>,
 ) -> Result<()> {
+    use crate::common::encoder::{EncoderFactory, EncoderType};
+    
+    // Check if hardware encoding is available
+    let _encoder_type = if EncoderFactory::is_hardware_available() {
+        info!("Hardware encoder available - using hardware acceleration");
+        EncoderType::Hardware
+    } else {
+        info!("Hardware encoder not available - using software encoding");
+        EncoderType::Software
+    };
+    
     // Run screen capture in a separate thread
     let (tx, mut rx) = mpsc::unbounded_channel::<crate::server::screen_capture::CapturedFrame>();
     
