@@ -6,6 +6,7 @@ use bytes::Bytes;
 use zstd::stream::encode_all;
 use crate::common::quality::QualityMode;
 use crate::common::frame_processor::FrameProcessor;
+use crate::common::encoder::{VideoEncoder, EncoderFactory, EncoderType, EncoderSettings};
 
 pub struct ScreenCapture {
     capturer: Capturer,
@@ -16,6 +17,8 @@ pub struct ScreenCapture {
     quality_mode: QualityMode,
     frame_processor: FrameProcessor,
     frame_count: u64,
+    video_encoder: Option<Box<dyn VideoEncoder>>,
+    use_hardware_encoding: bool,
 }
 
 impl ScreenCapture {
@@ -29,6 +32,24 @@ impl ScreenCapture {
         let width = capturer.width();
         let height = capturer.height();
         
+        // Try to create hardware encoder
+        let encoder_settings = EncoderSettings {
+            width: width as u32,
+            height: height as u32,
+            fps,
+            bitrate: 5_000_000, // 5 Mbps default
+            keyframe_interval: fps * 2, // Keyframe every 2 seconds
+        };
+        
+        let (video_encoder, use_hardware) = if EncoderFactory::is_hardware_available() {
+            match EncoderFactory::create_encoder(EncoderType::Hardware, encoder_settings) {
+                Ok(encoder) => (Some(encoder), true),
+                Err(_) => (None, false),
+            }
+        } else {
+            (None, false)
+        };
+        
         Ok(ScreenCapture {
             capturer,
             width,
@@ -38,6 +59,8 @@ impl ScreenCapture {
             quality_mode: QualityMode::High,
             frame_processor: FrameProcessor::new(width as u32, height as u32),
             frame_count: 0,
+            video_encoder,
+            use_hardware_encoding: use_hardware,
         })
     }
     
@@ -72,6 +95,32 @@ impl ScreenCapture {
                 // For now, always send keyframes to avoid artifacts
                 let force_keyframe = true; // TODO: Re-enable delta encoding when client properly handles it
                 
+                // Use hardware encoder if available
+                if let Some(encoder) = &mut self.video_encoder {
+                    match encoder.encode_frame(&rgb_data, force_keyframe) {
+                        Ok(encoded_frame) => {
+                            return Ok(Some(CapturedFrame {
+                                width: self.width as u32,
+                                height: self.height as u32,
+                                data: encoded_frame.data,
+                                timestamp: encoded_frame.timestamp,
+                                frame_type: if encoded_frame.is_keyframe {
+                                    crate::common::frame_processor::FrameType::KeyFrame
+                                } else {
+                                    crate::common::frame_processor::FrameType::DeltaFrame
+                                },
+                                tiles: None,
+                            }));
+                        }
+                        Err(e) => {
+                            tracing::warn!("Hardware encoder failed: {}, falling back to software", e);
+                            self.video_encoder = None;
+                            self.use_hardware_encoding = false;
+                        }
+                    }
+                }
+                
+                // Fall back to software processing
                 // Process frame with delta encoding
                 let processed = self.frame_processor.process_frame(&rgb_data, force_keyframe)?;
                 
