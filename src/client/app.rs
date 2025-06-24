@@ -7,6 +7,7 @@ use crate::client::connection::Connection;
 use crate::common::quality::{QualityMode, QualityMetrics};
 use crate::common::frame_processor::{FrameProcessor, ProcessedFrame, FrameType};
 use zstd::stream::decode_all;
+use crate::client::h264_decoder::H264Decoder;
 
 pub struct VoxApp {
     state: AppState,
@@ -25,6 +26,7 @@ pub struct VoxApp {
     last_mouse_pos: egui::Pos2,
     current_frame: Option<Vec<u8>>,
     frame_processor: Option<FrameProcessor>,
+    h264_decoder: Option<H264Decoder>,
     
     // Quality control
     current_quality: QualityMode,
@@ -62,6 +64,7 @@ impl Default for VoxApp {
             last_mouse_pos: egui::Pos2::ZERO,
             current_frame: None,
             frame_processor: None,
+            h264_decoder: None,
             current_quality: QualityMode::High,
             quality_metrics: None,
             show_quality_menu: false,
@@ -476,10 +479,33 @@ impl eframe::App for VoxApp {
                                     }
                                 }
                                 crate::common::protocol::EncodingType::H264 => {
-                                    // For now, we can't decode H.264 on the client
-                                    // We would need to add an H.264 decoder
-                                    tracing::error!("H.264 decoding not yet implemented on client");
-                                    continue;
+                                    // Initialize H.264 decoder if needed
+                                    if self.h264_decoder.is_none() {
+                                        match H264Decoder::new(width, height) {
+                                            Ok(decoder) => self.h264_decoder = Some(decoder),
+                                            Err(e) => {
+                                                tracing::error!("Failed to create H.264 decoder: {}", e);
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Decode H.264 frame
+                                    if let Some(decoder) = &mut self.h264_decoder {
+                                        match decoder.decode(&data) {
+                                            Ok(Some(rgb_data)) => rgb_data,
+                                            Ok(None) => {
+                                                // Decoder needs more data
+                                                continue;
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Failed to decode H.264 frame: {}", e);
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        continue;
+                                    }
                                 }
                                 crate::common::protocol::EncodingType::WebP => {
                                     // WebP is handled by software encoder
