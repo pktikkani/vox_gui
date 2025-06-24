@@ -8,7 +8,8 @@ fn main() -> Result<(), eframe::Error> {
         viewport: egui::ViewportBuilder::default()
             .with_title("Vox Remote Desktop Client")
             .with_inner_size([1024.0, 768.0])
-            .with_min_inner_size([800.0, 600.0]),
+            .with_min_inner_size([800.0, 600.0])
+            .with_icon(egui::IconData::default()), // Prevent icon loading crash
         ..Default::default()
     };
     
